@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/build/ar-threex.js"></script>
+</head>
+
+<body style="margin:0; overflow:hidden;">
+
+<script>
+let scene, camera, renderer;
+let markerRoot, arToolkitSource, arToolkitContext;
+let mixer;
+let clock = new THREE.Clock();
+
+/* ---------------------------------------------------------
+   ⭐ 마커 최초 인식 이후에만 모델 렌더링 허용
+---------------------------------------------------------- */
+let modelReference = null;
+let modelLoaded = false;
+let firstDetectionHappened = false;
+
+/* freeze 기반 변수 */
+let lastMatrix = new THREE.Matrix4();
+let prevMatrix = new THREE.Matrix4();
+let tempMatrix = new THREE.Matrix4();
+
+let freezeFrameCount = 0;      
+let FREEZE_LIMIT = 12;         
+let holdUntilTime = 0;
+let hasEverSeenMarker = false;
+
+init();
+animate();
+
+function init() {
+
+  /* Scene */
+  scene = new THREE.Scene();
+  camera = new THREE.Camera();
+  scene.add(camera);
+
+  /* Light */
+  scene.add(new THREE.AmbientLight(0xffffff, 3.0));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 3.0);
+  dirLight.position.set(1,1,1).normalize();
+  scene.add(dirLight);
+
+  /* Renderer */
+  renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  document.body.appendChild(renderer.domElement);
+
+  /* ARToolkit Source */
+  arToolkitSource = new THREEx.ArToolkitSource({ sourceType:'webcam' });
+  arToolkitSource.init(() => setTimeout(onResize, 2000));
+  window.addEventListener('resize', onResize);
+
+  function onResize() {
+    arToolkitSource.onResize();
+    arToolkitSource.copySizeTo(renderer.domElement);
+    if (arToolkitContext && arToolkitContext.arController) {
+      arToolkitSource.copySizeTo(arToolkitContext.arController.canvas);
+    }
+  }
+
+  /* ARToolkit Context */
+  arToolkitContext = new THREEx.ArToolkitContext({
+    cameraParametersUrl: './camera_para.dat',
+    detectionMode: 'mono'
+  });
+
+  arToolkitContext.init(() => {
+    camera.projectionMatrix.copy(arToolkitContext.getProjectionMatrix());
+  });
+
+  /* Marker */
+  markerRoot = new THREE.Group();
+  scene.add(markerRoot);
+
+  markerRoot.visible = false;   // ⭐ 실행 시 절대 모델 안 보이게 (카메라는 보임)
+
+  new THREEx.ArMarkerControls(arToolkitContext, markerRoot, {
+    type: 'pattern',
+    patternUrl: './euv.patt',
+
+    smooth: true,
+    smoothCount: 5,
+    smoothTolerance: 0.01,
+    smoothThreshold: 2,
+  });
+
+  /* GLB Load */
+  const loader = new THREE.GLTFLoader();
+  loader.load("./animodel.glb", (gltf) => {
+    const model = gltf.scene;
+    model.scale.set(0.02,0.02,0.02);
+    model.rotation.y = Math.PI;
+    model.position.set(-0.15,0,0);
+
+    model.visible = false;  // ⭐ 절대 렌더링 하지 않음 (초기 깜빡임 완벽 차단)
+
+    modelReference = model;
+    modelLoaded = true;
+
+    /* Animations */
+    if (gltf.animations.length > 0) {
+      mixer = new THREE.AnimationMixer(model);
+      gltf.animations.forEach(clip => {
+        const action = mixer.clipAction(clip);
+        action.reset();
+        action.play();
+      });
+    }
+  });
+
+}
+
+/* ---------------------------------------------------------
+   ⭐ tracking freeze (실제 마커 사라짐 감지)
+---------------------------------------------------------- */
+function isTrackingFrozen(currentMatrix, prevMatrix) {
+  tempMatrix.copy(prevMatrix).invert();
+  tempMatrix.multiply(currentMatrix);
+
+  const e = tempMatrix.elements;
+  let deviation = 0;
+  for (let i=0; i<16; i++) {
+    deviation += Math.abs(e[i] - (i%5==0 ? 1 : 0));
+  }
+  return deviation < 0.015;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  if (arToolkitSource.ready) {
+    arToolkitContext.update(arToolkitSource.domElement);
+  }
+
+  const now = Date.now();
+  const currentMatrix = markerRoot.matrix;
+
+  /* freeze check */
+  let trackingLost = false;
+
+  if (isTrackingFrozen(currentMatrix, prevMatrix)) {
+    freezeFrameCount++;
+  } else {
+    freezeFrameCount = 0;
+  }
+
+  prevMatrix.copy(currentMatrix);
+  trackingLost = freezeFrameCount > FREEZE_LIMIT;
+
+
+  /* ------------------------------------------
+     ⭐ 최초 마커 인식 시에만 모델을 등장시킴
+     → flicker가 절대 발생 불가
+  ------------------------------------------- */
+
+  if (!trackingLost) {
+
+    if (!firstDetectionHappened && modelLoaded) {
+      // 최초 감지 순간 단 한 번만 실행됨
+      markerRoot.add(modelReference);
+      modelReference.visible = true;
+      markerRoot.visible = true;
+
+      firstDetectionHappened = true;
+
+      console.log("FIRST DETECTION → MODEL APPEARS");
+    }
+
+    hasEverSeenMarker = true;
+    lastMatrix.copy(markerRoot.matrix);
+    holdUntilTime = now + 3000;
+
+  } else {
+
+    if (firstDetectionHappened) {
+      if (now <= holdUntilTime) {
+        // 유지
+        markerRoot.matrix.copy(lastMatrix);
+        markerRoot.matrixWorldNeedsUpdate = true;
+
+        markerRoot.visible = true;
+        if (modelReference) modelReference.visible = true;
+
+      } else {
+        markerRoot.visible = false;
+        if (modelReference) modelReference.visible = false;
+      }
+
+    }
+  }
+
+  /* Animation */
+  const delta = clock.getDelta();
+  if (mixer) mixer.update(delta);
+
+  renderer.render(scene, camera);
+}
+</script>
+
+</body>
+</html>
