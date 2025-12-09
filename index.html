@@ -107,6 +107,7 @@ function init() {
     model.scale.set(0.015, 0.015, 0.015);
     model.position.set(-0.15, 0, 0);
     model.rotation.y = Math.PI;
+    model.rotation.x = -Math.PI / 2;
 
     model.traverse((child) => {
       if (child.isMesh) child.frustumCulled = false;
@@ -182,4 +183,5 @@ function animate() {
 
 </body>
 </html>
+
 
