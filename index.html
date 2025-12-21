@@ -37,9 +37,9 @@ function init() {
   /* -----------------------
      조명 추가
   ------------------------ */
-  scene.add(new THREE.AmbientLight(0xffffff, 10.0));
+  scene.add(new THREE.AmbientLight(0xffffff, 4.0));
 
-  const dirLight = new THREE.DirectionalLight(0xffffff, 10.0);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 4.0);
   dirLight.position.set(1, 1, 1).normalize();
   scene.add(dirLight);
 
@@ -183,6 +183,7 @@ function animate() {
 
 </body>
 </html>
+
 
 
 
